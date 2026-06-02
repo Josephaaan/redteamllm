@@ -1,6 +1,5 @@
 from typing import Optional
-from openai import OpenAI
-from openai.types.chat.chat_completion import ChatCompletion
+import anthropic
 from termcolor import colored
 from ..config.config import configuration
 import os
@@ -87,11 +86,11 @@ class LLM():
         self.max_completion_token: Optional[int] = max_completion_tokens
         self.temperature : Optional[int]=temperature
 
-        self.messages : list[dict[str,str]] = [{"role" : "developer","content": self.system_prompt}]
+        self.messages : list[dict[str,str]] = [{"role" : "system","content": self.system_prompt}]
         try:
-            self.client : OpenAI = OpenAI(api_key=self.api_key)
+            self.client = anthropic.Anthropic(api_key=self.api_key)
         except Exception as e:
-            raise Exception(f"Couldn't create openai client:\n{e}")
+            raise Exception(f"Couldn't create Anthropic client:\n{e}")
         
         # tokens info
         self.total_tokens : int= 0
@@ -113,7 +112,7 @@ class LLM():
             list[dict[str,str]]: _description_
         """        
 
-        return [{"role" : "developer","content": self.system_prompt}]
+        return [{"role" : "system","content": self.system_prompt}]
 
     
 
@@ -129,18 +128,23 @@ class LLM():
 
 
     def give_metrics(self)->str:
-        """_summary_
-        Return formatted version of all tokens cmetrics
-        Returns:
-            str: _description_
-        """        
+        """
+        Return formatted version of all token metrics including estimated cost.
+        Rates: claude-haiku-4-5 input $0.80/1M, output $4.00/1M
+        """
+        input_cost  = (self.total_input_tokens  / 1_000_000) * 0.80
+        output_cost = (self.total_completion_tokens / 1_000_000) * 4.00
+        total_cost  = input_cost + output_cost
+
         to_print = "" \
-        f"TOTAL_INPUT_TOKEN: {self.total_input_tokens}\n"\
+        f"TOTAL_INPUT_TOKENS:      {self.total_input_tokens}\n"\
         f"TOTAL_COMPLETION_TOKENS: {self.total_completion_tokens}\n"\
-        f"TOTAL_TOKEN: {self.total_tokens}\n"\
-        f"TOTAL_TOOL_CALL: {self.tool_call_count}\n"\
-        f"TOTAL_API_CALLS: {self.api_calls}\n"\
-        f"TOTAL_USER_INPUT: {self.total_input_tokens}\n"
+        f"TOTAL_TOKENS:            {self.total_tokens}\n"\
+        f"TOTAL_TOOL_CALLS:        {self.tool_call_count}\n"\
+        f"TOTAL_API_CALLS:         {self.api_calls}\n"\
+        f"ESTIMATED_INPUT_COST:    ${input_cost:.4f}\n"\
+        f"ESTIMATED_OUTPUT_COST:   ${output_cost:.4f}\n"\
+        f"ESTIMATED_TOTAL_COST:    ${total_cost:.4f}\n"
 
         return to_print
     
@@ -194,18 +198,14 @@ class LLM():
         """        
         self.tool_call_count += 1
 
-    def _increment_token_info(self,completion: ChatCompletion)->None:
-        """_summary_
-        [PROTECTED METHOD]
-        Increment tokens count info from a completion response.
-        After a completion response, we will store all tokens info in the class instance
-        Args:
-            completion (ChatCompletion): respone from a chatcompletion.create
-        """        
+    def _increment_token_info(self, completion)->None:
+        """
+        Increment tokens count info from an Anthropic completion response.
+        """
         usage = completion.usage
-        self.total_tokens += usage.total_tokens
-        self.total_input_tokens +=  usage.prompt_tokens
-        self.total_completion_tokens += usage.completion_tokens
+        self.total_input_tokens += usage.input_tokens
+        self.total_completion_tokens += usage.output_tokens
+        self.total_tokens += usage.input_tokens + usage.output_tokens
     def _increment_api_call(self)->None:
         """_summary_
         Increment api calls
@@ -214,24 +214,34 @@ class LLM():
     
 
 
-    def _get_response(self) -> ChatCompletion:
-        """_summary_
-        [PROTECTED METHOD]
-        send a query to the LLM with the lists of message and return the response
-        Returns:
-            ChatCompletion: A chat completion object(OpenAI's response)
-        """        
-        # send and get the response
-        completion : ChatCompletion= self.client.chat.completions.create(
+    def _get_response(self):
+        """
+        Send a query to Anthropic and return the response.
+        """
+        # Separate system messages from conversation messages
+        system_prompt = self.system_prompt or ""
+        conversation = [m for m in self.messages if m.get("role") not in ("system", "developer")]
+
+        kwargs = dict(
             model=self.model_name,
-            messages=self.messages,
-            tools=self.__class__.tool_descriptions,
-            temperature=self.temperature,
-            max_completion_tokens=self.max_completion_token
+            max_tokens=self.max_completion_token or 4096,
+            system=system_prompt,
+            messages=conversation,
         )
-        # append result to the messgae's list
+        if self.__class__.tool_descriptions:
+            # Convert OpenAI tool format to Anthropic tool format
+            anthropic_tools = []
+            for t in self.__class__.tool_descriptions:
+                fn = t["function"]
+                anthropic_tools.append({
+                    "name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters", {"type": "object", "properties": {}})
+                })
+            kwargs["tools"] = anthropic_tools
+
+        completion = self.client.messages.create(**kwargs)
         self._add_assistant_response(completion)
-        # Increment token count
         self._increment_token_info(completion)
         self._increment_api_call()
         self.save_conversation()
@@ -271,45 +281,40 @@ class LLM():
         tool_call_message = {"role":"tool","tool_call_id":tool_call_id,"content":content}
         self._append_to_message(tool_call_message)
 
-    def _add_assistant_response(self,completion:ChatCompletion) -> None:
-        """_summary_
-        add the llm response to the list of messages
-        Args:
-            completion (ChatCompletion): the chat completion (llm's response)
-        """        
-        message = completion.choices[0].message
-        assistant_response = {"role":"assistant","content":message.content,"tool_calls":message.tool_calls}
+    def _add_assistant_response(self, completion) -> None:
+        """
+        Add Anthropic response to the list of messages.
+        Handles both text and tool_use content blocks.
+        """
+        text_content = ""
+        tool_calls = []
+        for block in completion.content:
+            if block.type == "text":
+                text_content = block.text
+            elif block.type == "tool_use":
+                tool_calls.append(block)
+        assistant_response = {
+            "role": "assistant",
+            "content": text_content,
+            "tool_calls": tool_calls if tool_calls else None
+        }
         self._append_to_message(assistant_response)
     
-    def _process_tool_call(self,completion: ChatCompletion)-> None:
-        """_summary_
-        Given a completion response, process all tool calls:
-        Iterate through every tool_call request, call the function and
-        append the result to the message list
-        Args:
-            completion (ChatCompletion): the chat completion (llm's response)
-
-        Raises:
-            Exception: _description_
-        """        
-        response_message = completion.choices[0].message
-        for tool_call in response_message.tool_calls:
-            # increment tool call nb
+    def _process_tool_call(self, completion) -> None:
+        """
+        Process Anthropic tool_use blocks from completion response.
+        """
+        for block in completion.content:
+            if block.type != "tool_use":
+                continue
             self._increment_tool_call_count()
-            #add the tool call to the list of messages
-            function_name = tool_call.function.name
-            # check if the function name is present in the tools dict
-            if not self.__class__.tools[function_name]:
-                raise Exception("LLM trying to call a missing function")
-
-            # get the function to use
+            function_name = block.name
+            if not self.__class__.tools.get(function_name):
+                raise Exception(f"LLM trying to call a missing function: {function_name}")
             func = self.__class__.tools[function_name]
-            # get arguments of the func
-            args = json.loads(tool_call.function.arguments)
-            # get the function result 
+            args = block.input
             result = func(**args)
-            #append the result
-            self._add_tool_call_message(tool_call.id,result)
+            self._add_tool_call_message(block.id, result)
 
 
     
@@ -330,14 +335,16 @@ class LLM():
         if content:
             self._add_user_message(content)
         # send prompt and recieve answer
-        completion : ChatCompletion =self._get_response()
-        # while the answer is a tool call
-        while completion.choices[0].message.tool_calls:
-            # treat the tool calls
+        completion = self._get_response()
+        # while the answer contains tool_use blocks
+        while any(b.type == "tool_use" for b in completion.content):
             self._process_tool_call(completion)
-            # get response from the LLM
             completion = self._get_response()
-        return completion.choices[0].message.content
+        # return text content
+        for block in completion.content:
+            if block.type == "text":
+                return block.text
+        return ""
      
 
 
@@ -352,6 +359,6 @@ class test(LLM):
         self.tool_call_execution = []
         tool: dict = {}
         self.system_prompt = ""
-        self.messages : list[dict[str,str]] = [{"role" : "developer","content": self.system_prompt}]
+        self.messages : list[dict[str,str]] = [{"role" : "system","content": self.system_prompt}]
 
 

@@ -22,3 +22,6 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+src/redteamagent/config/config.json
+*.original
+src/redteamagent/config/config.json
