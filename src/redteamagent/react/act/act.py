@@ -91,12 +91,21 @@ class Act(LLM):
         return super().send_process_prompt(content)
     
     def give_last_execution(self) -> str:
-        """_summary_
-        Returns last tool execution
-        Returns:
-            str: commands and result of the last tool execution
-        """        
+        """
+        Returns last tool execution (raw).
+        """
         return self.tool_call_execution[-1]
+
+    def give_last_execution_for_reason(self) -> str:
+        """
+        Returns a trimmed version of the last execution for the Reason session.
+        Caps at 2000 chars to prevent Reason context from bloating on verbose
+        tool output. Reason needs the conclusion, not the full raw result.
+        """
+        last = self.tool_call_execution[-1]
+        if len(last) > 2000:
+            return last[:2000] + "\n...[truncated for reasoning efficiency]"
+        return last
 
     
 

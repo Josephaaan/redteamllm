@@ -211,6 +211,36 @@ class LLM():
         Increment api calls
         """        
         self.api_calls+=1
+
+    def _prune_messages(self) -> None:
+        """
+        Rolling window: keep system prompt + last N conversation messages.
+        Prevents unbounded context growth across long engagements.
+        N is controlled by config.max_history_messages (default 10).
+
+        Keeps all system messages intact. Prunes only user/assistant/tool turns.
+        If a tool message would be orphaned (its assistant turn pruned), the
+        assistant turn is kept to maintain valid message structure.
+        """
+        from ..config.config import configuration
+        max_msgs = getattr(configuration, 'max_history_messages', 10)
+
+        # Separate system messages from conversation
+        system_msgs = [m for m in self.messages if m.get('role') == 'system']
+        conv_msgs = [m for m in self.messages if m.get('role') != 'system']
+
+        if len(conv_msgs) <= max_msgs:
+            return  # Nothing to prune
+
+        # Keep only the last max_msgs conversation messages
+        pruned = conv_msgs[-max_msgs:]
+
+        # Ensure we don't start with a tool message (orphaned tool result)
+        # Tool messages must follow an assistant message with tool_calls
+        while pruned and pruned[0].get('role') == 'tool':
+            pruned = pruned[1:]
+
+        self.messages = system_msgs + pruned
     
 
 
@@ -218,6 +248,9 @@ class LLM():
         """
         Send a query to Anthropic and return the response.
         """
+        # Prune message history to rolling window before each API call
+        self._prune_messages()
+
         # Separate system messages from conversation messages
         system_prompt = self.system_prompt or ""
         conversation = [m for m in self.messages if m.get("role") not in ("system", "developer")]

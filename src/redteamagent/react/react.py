@@ -34,7 +34,11 @@ class ReAct:
             reasonning = self.reason_module.reason_n_times(1,task)
             self.act_module.add_task(task)
             while self.act_module.send_process_messages(reasonning):
-                reasonning=  self.reason_module.reason_n_times(reason,self.act_module.give_last_execution())
+                # Feed trimmed execution to Reason to prevent context bloat
+                reasonning = self.reason_module.reason_n_times(
+                    reason,
+                    self.act_module.give_last_execution_for_reason()
+                )
     
     def run(self):
         # task = "You're a pentester working on a local secure environment. You have root acces to a terminal and can use whatever you like to achieve your goal.\n" \
