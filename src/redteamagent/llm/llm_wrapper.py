@@ -173,9 +173,23 @@ class LLM():
         conv = ""
         for e in self.messages:
             cont = e["content"]
-            if cont == None:
+            if cont is None:
                 cont = ""
-            conv += e["role"] + ":\n" + cont +"\n"
+            elif isinstance(cont, list):
+                # Anthropic content blocks: flatten to readable text
+                parts = []
+                for block in cont:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            parts.append(block.get("text", ""))
+                        elif block.get("type") == "tool_use":
+                            parts.append(f"[tool_use: {block.get('name')} {block.get('input')}]")
+                        elif block.get("type") == "tool_result":
+                            parts.append(f"[tool_result: {block.get('content', '')}]")
+                    else:
+                        parts.append(str(block))
+                cont = "\n".join(parts)
+            conv += e["role"] + ":\n" + str(cont) + "\n"
         return conv
 
 
@@ -311,7 +325,18 @@ class LLM():
             tool_call_id (int): id of the tool call
             content (str): result of the tool call
         """        
-        tool_call_message = {"role":"tool","tool_call_id":tool_call_id,"content":content}
+        # Anthropic requires tool results as a user message containing a
+        # tool_result content block that references the tool_use id.
+        tool_call_message = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_call_id,
+                    "content": str(content)
+                }
+            ]
+        }
         self._append_to_message(tool_call_message)
 
     def _add_assistant_response(self, completion) -> None:
@@ -319,17 +344,22 @@ class LLM():
         Add Anthropic response to the list of messages.
         Handles both text and tool_use content blocks.
         """
-        text_content = ""
-        tool_calls = []
+        # Store the full content block array as Anthropic requires it.
+        # Convert each block to a serializable dict so it round-trips correctly.
+        content_blocks = []
         for block in completion.content:
             if block.type == "text":
-                text_content = block.text
+                content_blocks.append({"type": "text", "text": block.text})
             elif block.type == "tool_use":
-                tool_calls.append(block)
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input
+                })
         assistant_response = {
             "role": "assistant",
-            "content": text_content,
-            "tool_calls": tool_calls if tool_calls else None
+            "content": content_blocks
         }
         self._append_to_message(assistant_response)
     

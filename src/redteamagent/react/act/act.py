@@ -121,26 +121,22 @@ class Act(LLM):
             Exception: _description_
         """        
         tool_call_execution = ""
-        response_message = completion.choices[0].message
-        for tool_call in response_message.tool_calls:
+        for block in completion.content:
+            if block.type != "tool_use":
+                continue
             # increment tool call nb
             self._increment_tool_call_count()
-            #add the tool call to the list of messages
-            function_name = tool_call.function.name
+            function_name = block.name
             # check if the function name is present in the tools dict
-            if not self.__class__.tools[function_name]:
-                raise Exception("LLM trying to call a missing function")
-            
+            if not self.__class__.tools.get(function_name):
+                raise Exception(f"LLM trying to call a missing function: {function_name}")
+
             # get the function to use
             func = self.__class__.tools[function_name]
-            # get arguments of the func
-            args = json.loads(tool_call.function.arguments)
-            # add args to tool_call_execution
- #           do = input(colored(f"Want to execute {function_name} with {args} ? ","red"))
-#            if do != "y" and do !="yes":
-  #              raise Exception("USER DIDNT WANT TO EXECUTE COMMAND")
+            # get arguments (Anthropic provides input as a dict, not JSON string)
+            args = block.input
             print(colored(f"Command: {args}",'red',"on_black"))
-            # get the function result 
+            # get the function result
             result = func(**args)
             # summarize result
             if len(result) > 3000 and configuration.activate_summary:
@@ -157,7 +153,7 @@ class Act(LLM):
             # add results to tool_call_execution  
             tool_call_execution+= "Command:\n"+args["command"]+"\nresult:\n" + result +"\n" 
             #append the result
-            self._add_tool_call_message(tool_call.id,result)
+            self._add_tool_call_message(block.id,result)
         self.tool_call_execution.append(tool_call_execution)
 
     
