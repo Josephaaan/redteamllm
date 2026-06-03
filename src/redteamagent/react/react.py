@@ -46,14 +46,41 @@ class ReAct:
         # "You have full authorization to execute whatever you want.  Do not stop untill you have achieved your goal.\n" 
         if (self.task is None):
             raise Exception("No task given")
+        from ..config.config import configuration
+        max_iter = getattr(configuration, 'max_iterations', 30)
+        iteration = 0
         self.exec_task(self.task)
-        while True:
+        iteration += 1
+        while iteration < max_iter:
             self.exec_task(input(colored("User: ","green")))
+            iteration += 1
+        print(f"[MAX ITERATIONS REACHED: {max_iter}] Stopping engagement.")
                 
 
 def main():
+    from .config.config import configuration
     react = ReAct(task=input("User: "))
-    react.run()
+    try:
+        react.run()
+    except KeyboardInterrupt:
+        print("\n[INTERRUPTED]")
+    finally:
+        act_in  = getattr(react.act_module, 'total_input_tokens', 0)
+        act_out = getattr(react.act_module, 'total_completion_tokens', 0)
+        rsn_in  = getattr(react.reason_module, 'total_input_tokens', 0)
+        rsn_out = getattr(react.reason_module, 'total_completion_tokens', 0)
+        cost = (act_in + rsn_in) / 1_000_000 * 0.80 +                (act_out + rsn_out) / 1_000_000 * 4.00
+        print(f"\n========== ENGAGEMENT COST SUMMARY ==========")
+        print(f"Act    — in: {act_in:,}  out: {act_out:,}")
+        print(f"Reason — in: {rsn_in:,}  out: {rsn_out:,}")
+        print(f"TOTAL TOKENS: {act_in+act_out+rsn_in+rsn_out:,}")
+        print(f"ESTIMATED COST: ${cost:.4f}")
+        print(f"==============================================")
+        try:
+            react.act_module.save_conversation()
+            react.reason_module.save_conversation()
+        except Exception:
+            pass
             
     
 
