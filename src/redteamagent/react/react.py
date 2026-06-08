@@ -35,9 +35,16 @@ class ReAct:
             self.act_module.add_task(task)
             while self.act_module.send_process_messages(reasonning):
                 # Feed trimmed execution to Reason to prevent context bloat
+                from .act.act_tools import get_failed_commands_summary
+                from .task_state import engagement
+                failed_summary = get_failed_commands_summary()
+                state_block = engagement.status_block()
+                last_exec = self.act_module.give_last_execution_for_reason()
+                parts = [p for p in [state_block, failed_summary, last_exec] if p]
+                last_exec = "\n\n".join(parts)
                 reasonning = self.reason_module.reason_n_times(
                     reason,
-                    self.act_module.give_last_execution_for_reason()
+                    last_exec
                 )
     
     def run(self):
@@ -57,9 +64,92 @@ class ReAct:
         print(f"[MAX ITERATIONS REACHED: {max_iter}] Stopping engagement.")
                 
 
+def get_attacker_ip():
+    """Detect the attacker machine IP on the engagement network."""
+    import subprocess
+    result = subprocess.run(
+        ['ip', '-br', 'addr'],
+        capture_output=True, text=True
+    )
+    for line in result.stdout.splitlines():
+        if 'UP' in line and '192.168.' in line:
+            import re
+            match = re.search(r'192\.168\.\d+\.\d+', line)
+            if match:
+                return match.group(0)
+    return 'UNKNOWN'
+
 def main():
-    from .config.config import configuration
-    react = ReAct(task=input("User: "))
+    attacker_ip = get_attacker_ip()
+    print(f"[*] Attacker IP detected: {attacker_ip}")
+    target_ip = input("Enter TARGET IP: ").strip()
+    
+    # Inject identity context into the task
+    task = input("User: ").strip()
+    identity_prefix = (
+        f"IDENTITY: You are running on attacker machine {attacker_ip}. "
+        f"The target is {target_ip}. "
+        f"All commands execute on {attacker_ip}. "
+        f"Only send network traffic to {target_ip}. "
+        f"Never probe localhost, 127.0.0.1, or {attacker_ip}. "
+        f"TASK: "
+    )
+    full_task = identity_prefix + task
+    from .task_state import engagement
+    import json, pathlib
+    state_file = pathlib.Path.home() / ".redteamllm_engagement.json"
+
+    # Load persisted state if target matches
+    if state_file.exists():
+        saved = json.loads(state_file.read_text())
+        if saved.get("target_ip") == target_ip:
+            print(f"[*] Found saved engagement state for {target_ip}")
+            for i, o in enumerate(saved.get("objectives", [])):
+                icon = {"DONE": "[OK]", "FAILED": "[X]", "PENDING": "[ ]"}.get(o["status"], "[ ]")
+                print(f"    {icon} {i+1}. {o['description']}")
+            resume = input("[?] Resume previous engagement? (y/n): ").strip().lower()
+            if resume == "y":
+                engagement.init(target_ip=target_ip, attacker_ip=attacker_ip)
+                for o in saved.get("objectives", []):
+                    obj_idx = len(engagement.objectives)
+                    engagement.add_objective(o["description"])
+                    engagement.objectives[obj_idx].status = o["status"]
+                    engagement.objectives[obj_idx].result = o["result"]
+                engagement.key_findings = saved.get("key_findings", [])
+                engagement.phase = saved.get("phase", "recon")
+                print(f"[*] Engagement resumed.")
+            else:
+                print(f"[*] Starting fresh engagement for {target_ip}.")
+                state_file.unlink()
+                engagement.init(target_ip=target_ip, attacker_ip=attacker_ip)
+                engagement.parse_objectives_from_task(task)
+        else:
+            print(f"[*] New target {target_ip} (previous: {saved.get('target_ip')}). Starting fresh.")
+            engagement.init(target_ip=target_ip, attacker_ip=attacker_ip)
+            engagement.parse_objectives_from_task(task)
+    else:
+        engagement.init(target_ip=target_ip, attacker_ip=attacker_ip)
+        engagement.parse_objectives_from_task(task)
+
+    # Save state to disk
+    def _save_state():
+        state_file.write_text(json.dumps({
+            "target_ip": engagement.target_ip,
+            "attacker_ip": engagement.attacker_ip,
+            "phase": engagement.phase,
+            "objectives": [{"description": o.description, "status": o.status, "result": o.result}
+                           for o in engagement.objectives],
+            "key_findings": engagement.key_findings,
+        }, indent=2))
+
+    _save_state()
+    if engagement.objectives:
+        print(f"[*] {len(engagement.objectives)} objective(s):")
+        for i, obj in enumerate(engagement.objectives):
+            icon = {"DONE": "[OK]", "FAILED": "[X]", "PENDING": "[ ]"}.get(obj.status, "[ ]")
+            print(f"    {icon} {i+1}. {obj.description}")
+
+    react = ReAct(task=full_task)
     try:
         react.run()
     except KeyboardInterrupt:
