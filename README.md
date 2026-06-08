@@ -242,3 +242,47 @@ John lock file stuck:
 
 XRDP clipboard not working:
     killall xrdp-chansrv 2>/dev/null; xrdp-chansrv &
+
+
+---
+
+## Report Generation
+
+At the end of every engagement, RedTeamLLM automatically generates two report files saved to `~/.redteamllm_reports/`:
+
+- `YYYYMMDD-HHMMSS-<target>.json` — machine-readable, for OpenClaw ingestion
+- `YYYYMMDD-HHMMSS-<target>.md` — human-readable Markdown
+
+The JSON report structure:
+```json
+{
+  "meta": { "target_ip", "outcome", "phase_reached", "generated_at" },
+  "objectives": { "completed", "failed", "pending", "details" },
+  "findings": { "credentials", "flags_captured", "access_confirmed" },
+  "vulnerabilities": [ "list of identified vulnerabilities" ],
+  "recommendations": [ "list of remediation steps for blue team" ]
+}
+```
+
+View the latest report:
+
+    cat $(ls -t ~/.redteamllm_reports/*.md | head -1)
+
+View the JSON for OpenClaw:
+
+    cat $(ls -t ~/.redteamllm_reports/*.json | head -1)
+
+List all reports:
+
+    ls -lt ~/.redteamllm_reports/
+
+### Pre-scan Workflow for Blue Team Exercises
+
+This report output is designed for exercises where RedTeamLLM runs as a pre-scanner before the blue team begins remediation:
+
+1. RedTeamLLM runs autonomously against the vulnerable VM and generates a report
+2. The blue team reads the Markdown report and patches the identified vulnerabilities
+3. The red teamer attacks manually after the blue team has had time to remediate
+4. OpenClaw can ingest the JSON report directly to coordinate follow-on actions
+
+The JSON report is written to ~/.redteamllm_reports/ and can be read by OpenClaw automatically.
