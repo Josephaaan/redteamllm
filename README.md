@@ -154,3 +154,91 @@ We validated RedTeamLLM on **five “easy” VULNHUB virtual machines**. Each li
 5. **Wait** until the agent halts. A folder **`saved_<N>`** appears containing `Act.txt`, `Reason.txt`, and `Summarizer.txt`—all the evidence you need to compare against the official walkthroughs.
 
 ---
+
+
+---
+
+# Setup and Usage Guide
+
+## 1. Prerequisites
+
+Install required tools on Kali:
+
+    sudo apt install -y sshpass nmap gobuster nikto sqlmap john hashcat strace
+
+## 2. Installation
+
+    git clone -b cost-optimizations https://github.com/Josephaaan/RedTeamLLM-Modification.git /opt/redteamllm
+    cd /opt/redteamllm
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+
+## 3. Configuration
+
+    cp src/redteamagent/config/config.example.json src/redteamagent/config/config.json
+    nano src/redteamagent/config/config.json
+
+Set these fields in config.json:
+- api_key: your Anthropic API key
+- model_name: claude-haiku-4-5-20251001
+- reason_time: 1  (MUST be 1 - enables all patches)
+- max_history_messages: 12
+- max_iterations: 30
+
+## 4. Network Setup
+
+    sudo ip addr add 192.168.88.241/24 dev eth0
+    sudo ip link set eth0 up
+    ping 192.168.88.240
+
+## 5. Running an Engagement
+
+    mkdir -p ~/logs
+    cd /opt/redteamllm
+    source .venv/bin/activate
+    python3 -u -m src.redteamagent.react.react 2>&1 | tee ~/logs/engagement-$(date +%Y%m%d-%H%M).log
+
+At the prompts enter the target IP then your task description.
+
+## 6. Example Task Prompts
+
+From scratch with no credentials:
+
+    Target: 192.168.88.240. No credentials known. Objectives: (1) enumerate open services, (2) gain initial shell, (3) escalate to root, (4) capture the root flag. Scope: 192.168.88.240 only.
+
+With known SSH credentials on a legacy target:
+
+    Target: 192.168.88.240. SSH credentials: dstevens:ilike2surf. Use sshpass for all SSH: sshpass -p "ilike2surf" ssh -o StrictHostKeyChecking=no -o KexAlgorithms=+diffie-hellman-group1-sha1 -o HostKeyAlgorithms=+ssh-rsa -o MACs=hmac-sha1 dstevens@192.168.88.240 "COMMAND". For sudo: echo 'ilike2surf' | sudo -S COMMAND. For mysql: mysql -uUSER -pPASSWORD (no space after -p). Objectives: (1) read /tmp/test.txt as root, (2) dump the ehks database. Scope: 192.168.88.240 only.
+
+## 7. Viewing Reports
+
+    grep -A 40 "ENGAGEMENT SUMMARY" $(ls -t ~/logs/*.log | head -1)
+    grep -c "TIMEOUT" ~/logs/engagement-*.log
+    grep -c "COMMAND BLOCKED" ~/logs/engagement-*.log
+
+## 8. Engagement Persistence
+
+On relaunch against the same target the agent will ask:
+    [?] Resume previous engagement? (y/n):
+Answer y to resume or n to start fresh. Always use n for benchmarking.
+
+Clear saved state manually:
+    rm ~/.redteamllm_engagement.json
+
+## 9. Troubleshooting
+
+State block not appearing in output - reason_time is 0:
+    python3 -c "import json; p='src/redteamagent/config/config.json'; c=json.load(open(p)); c['reason_time']=1; json.dump(c,open(p,'w'),indent=4); print('Fixed')"
+
+Strace missing - timeout will not work:
+    sudo apt install -y strace
+
+Virtual environment not active:
+    source /opt/redteamllm/.venv/bin/activate
+
+John lock file stuck:
+    rm -f ~/.john/john.rec
+
+XRDP clipboard not working:
+    killall xrdp-chansrv 2>/dev/null; xrdp-chansrv &
