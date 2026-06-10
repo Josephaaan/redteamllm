@@ -31,16 +31,21 @@ class ReAct:
             while self.act_module.send_process_messages():
                 pass
         else:
+            stall_threshold = getattr(configuration, 'stall_threshold', 6)
             reasonning = self.reason_module.reason_n_times(1,task)
             self.act_module.add_task(task)
             while self.act_module.send_process_messages(reasonning):
                 # Feed trimmed execution to Reason to prevent context bloat
                 from .act.act_tools import get_failed_commands_summary
                 from .task_state import engagement
+                # One reasoning cycle has elapsed; advance the stall counter and,
+                # if progress has stalled, nudge (do not steer) the reasoner.
+                current_iter = engagement.advance_iteration()
+                stall_advisory = engagement.stall_check(current_iter, stall_threshold)
                 failed_summary = get_failed_commands_summary()
                 state_block = engagement.status_block()
                 last_exec = self.act_module.give_last_execution_for_reason()
-                parts = [p for p in [state_block, failed_summary, last_exec] if p]
+                parts = [p for p in [state_block, stall_advisory, failed_summary, last_exec] if p]
                 last_exec = "\n\n".join(parts)
                 reasonning = self.reason_module.reason_n_times(
                     reason,

@@ -19,6 +19,7 @@ class Config:
         self.activate_summary : bool  = self.data.get("activate_summary")
         self.max_history_messages : int = self.data.get("max_history_messages", 10)
         self.max_iterations : int = self.data.get("max_iterations", 30)
+        self.stall_threshold : int = self.data.get("stall_threshold", 6)
         self.model_name: str = self.data.get("model_name")
         self.api_key:str = self.data.get("api_key")
 
