@@ -172,8 +172,8 @@ def main():
         except Exception:
             pass
         try:
-            from .react.report_generator import generate_report
-            from .react.task_state import engagement
+            from .report_generator import generate_report
+            from .task_state import engagement
             generate_report(engagement, log_path=None)
         except Exception as e:
             print(f"[!] Report generation failed: {e}")
