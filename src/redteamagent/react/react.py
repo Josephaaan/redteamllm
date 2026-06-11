@@ -26,6 +26,8 @@ class ReAct:
 
     def exec_task(self,task:str):
         reason : bool = configuration.reason_time
+        # Stall threshold is config-driven; a missing key must not crash.
+        stall_threshold = getattr(configuration, 'stall_threshold', 6)
         if reason == 0:
             self.act_module.add_task(task)
             while self.act_module.send_process_messages():
@@ -37,10 +39,16 @@ class ReAct:
                 # Feed trimmed execution to Reason to prevent context bloat
                 from .act.act_tools import get_failed_commands_summary
                 from .task_state import engagement
+                # One reasoning loop = one engagement iteration.
+                engagement.iteration += 1
                 failed_summary = get_failed_commands_summary()
                 state_block = engagement.status_block()
+                # Anti-rabbit-hole nudge injected on the same channel as the
+                # engagement status block. It only nudges reasoning; nothing
+                # is auto-executed.
+                advisory = engagement.stall_check(engagement.iteration, stall_threshold)
                 last_exec = self.act_module.give_last_execution_for_reason()
-                parts = [p for p in [state_block, failed_summary, last_exec] if p]
+                parts = [p for p in [state_block, failed_summary, advisory, last_exec] if p]
                 last_exec = "\n\n".join(parts)
                 reasonning = self.reason_module.reason_n_times(
                     reason,
